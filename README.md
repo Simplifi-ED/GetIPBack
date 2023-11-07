@@ -32,7 +32,7 @@ then,
 
 ```shell
 az login
-go run 
+GetIPBack
 ```
 
 ## Description
