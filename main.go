@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"strconv"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -19,15 +20,15 @@ import (
 var subscriptionId string
 
 const (
-	resourceGroupName = "rg-marouane"
-	vmName            = "happybit-vm"
-	vnetName          = "happybit-vnet"
-	subnetName        = "happybit-subnet"
-	nicName           = "happybit-nic"
-	diskName          = "happybit-disk"
-	publicIPName      = "happybit-public-ip"
-	location          = "francecentral"
-	desiredIP         = "52.143.143.195"
+	resourceGroupName = os.Getenv("DETECTIVE_RG")
+	vmName            = os.Getenv("DETECTIVE_VM_NAME")
+	vnetName          = os.Getenv("DETECTIVE_VNET_NAME")
+	subnetName        = os.Getenv("DETECTIVE_SNET_NAME")
+	nicName           = os.Getenv("DETECTIVE_NIC_NAME")
+	diskName          = os.Getenv("DETECTIVE_DISK_NAME")
+	publicIPName      = os.Getenv("DETECTIVE_PIP_NAME")
+	location          = os.Getenv("DETECTIVE_LOCATION")
+	desiredIP         = os.Getenv("DETECTIVE_MAGIC_IP")
 )
 
 var (
@@ -51,8 +52,14 @@ func main() {
 	if len(subscriptionId) == 0 {
 		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
 	}
+	
 	log.Info("Creating VMs...")
-	numJobs := 5
+	
+	numJobs, err := strconv.ParseInt(os.Getenv("DETECTIVE_CONCURRENT_JOBS"), 10, 0)
+	if err != nil {
+		fmt.Println("Error during conversion")
+		return
+	}
 
 	var wg sync.WaitGroup
 	resultChan := make(chan string, numJobs)
