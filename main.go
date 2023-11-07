@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"sync"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v4"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v2"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
+	"github.com/charmbracelet/log"
 )
 
 var subscriptionId string
@@ -51,7 +51,7 @@ func main() {
 	if len(subscriptionId) == 0 {
 		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
 	}
-	fmt.Println("Creating VMs...")
+	log.Info("Creating VMs...")
 	numJobs := 5
 
 	var wg sync.WaitGroup
@@ -71,9 +71,9 @@ func main() {
 		fmt.Println(result)
 	}
 
-	fmt.Println("Assiging Public IPs...")
+	log.Info("Assiging Public IPs...")
 
-	fmt.Println("Running Jobs...")
+	log.Info("Running Jobs...")
 	var wgPIP sync.WaitGroup
 	tasks := make(chan int)
 
@@ -82,7 +82,7 @@ func main() {
 		go associatePublicIP(i, tasks, &wgPIP)
 	}
 
-	for i := 1; i <= 50; i++ {
+	for i := 1; i <= 10; i++ {
 		tasks <- i
 	}
 
@@ -110,7 +110,7 @@ func associatePublicIP(jobID int, tasks <-chan int, wg *sync.WaitGroup) {
 		if err != nil {
 			log.Fatalf("cannot create public IP address:%+v", err)
 		}
-		log.Printf("Created public IP address: %s", *publicIP.ID)
+		log.Info("Created public IP address: %s", *publicIP.ID)
 
 		vmNic, err := interfacesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", nicName, jobID), nil)
 		if err != nil {
@@ -153,18 +153,18 @@ func associatePublicIP(jobID int, tasks <-chan int, wg *sync.WaitGroup) {
 			log.Fatal(err)
 		}
 
-		log.Printf("Public IP Associated: %s", *resp.Name)
+		log.Info("Public IP Associated: %s", *resp.Name)
 
 		time.Sleep(10 * time.Second)
 
 		allocatedIP := getPublicIP(jobID)
 
 		if allocatedIP == desiredIP {
-			fmt.Printf("Job %d: Allocated IP address matches the desired IP address: %s \n", jobID, allocatedIP)
+			log.Info("Job %d: Allocated IP address matches the desired IP address: %s \n", jobID, allocatedIP)
 
 		}
 		if allocatedIP != desiredIP {
-			fmt.Printf("Job %d: Allocated IP address (%s) does not match the desired IP address (%s). \n", jobID, allocatedIP, desiredIP)
+			log.Info("Job %d: Allocated IP address (%s) does not match the desired IP address (%s). \n", jobID, allocatedIP, desiredIP)
 			dissociateAndDeletePublicIP(ctx, jobID)
 		}
 
@@ -210,13 +210,13 @@ func dissociateAndDeletePublicIP(ctx context.Context, jobID int) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("Public IP Disassociated: %s", *resp.Name)
+	log.Info("Public IP Disassociated: %s", *resp.Name)
 
 	err = deletePublicIP(ctx, jobID)
 	if err != nil {
 		log.Fatalf("cannot delete public IP address:%+v", err)
 	}
-	log.Println("deleted public IP address")
+	log.Info("deleted public IP address")
 
 }
 
@@ -248,31 +248,31 @@ func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 	virtualMachinesClient = computeClientFactory.NewVirtualMachinesClient()
 	disksClient = computeClientFactory.NewDisksClient()
 
-	log.Println("start creating virtual machine...")
+	log.Info("start creating virtual machine...")
 	virtualNetwork, err := createVirtualNetwork(ctx, jobID)
 	if err != nil {
 		log.Fatalf("cannot create virtual network:%+v", err)
 	}
-	log.Printf("Created virtual network: %s", *virtualNetwork.ID)
+	log.Info("Created virtual network: %s", *virtualNetwork.ID)
 
 	subnet, err := createSubnets(ctx, jobID)
 	if err != nil {
 		log.Fatalf("cannot create subnet:%+v", err)
 	}
-	log.Printf("Created subnet: %s", *subnet.ID)
+	log.Info("Created subnet: %s", *subnet.ID)
 
 	netWorkInterface, err := createNetWorkInterface(ctx, *subnet.ID, jobID)
 	if err != nil {
 		log.Fatalf("cannot create network interface:%+v", err)
 	}
-	log.Printf("Created network interface: %s", *netWorkInterface.ID)
+	log.Info("Created network interface: %s", *netWorkInterface.ID)
 
 	networkInterfaceID := netWorkInterface.ID
 	virtualMachine, err := createVirtualMachine(ctx, *networkInterfaceID, jobID)
 	if err != nil {
 		log.Fatalf("cannot create virual machine:%+v", err)
 	}
-	log.Printf("Created network virual machine: %s", *virtualMachine.ID)
+	log.Info("Created network virual machine: %s", *virtualMachine.ID)
 
 	resultChan <- fmt.Sprintf("Job %d: Virtual machine created successfully", jobID)
 
@@ -281,44 +281,44 @@ func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 func cleanup(jobID int) {
 	ctx := context.Background()
 
-	log.Println("start deleting virtual machine...")
+	log.Warn("start deleting virtual machine...")
 	err := deleteVirtualMachine(ctx, jobID)
 	if err != nil {
 		log.Fatalf("cannot delete virtual machine:%+v", err)
 	}
-	log.Println("deleted virtual machine")
+	log.Warn("deleted virtual machine")
 
 	err = deleteDisk(ctx, jobID)
 	if err != nil {
 		log.Fatalf("cannot delete disk:%+v", err)
 	}
-	log.Println("deleted disk")
+	log.Warn("deleted disk")
 
 	err = deleteNetWorkInterface(ctx, jobID)
 	if err != nil {
 		log.Fatalf("cannot delete network interface:%+v", err)
 	}
-	log.Println("deleted network interface")
+	log.Warn("deleted network interface")
 
 	err = deletePublicIP(ctx, jobID)
 	if err != nil {
 		log.Fatalf("cannot delete public IP address:%+v", err)
 	}
-	log.Println("deleted public IP address")
+	log.Warn("deleted public IP address")
 
 	err = deleteSubnets(ctx, jobID)
 	if err != nil {
 		log.Fatalf("cannot delete subnet:%+v", err)
 	}
-	log.Println("deleted subnet")
+	log.Warn("deleted subnet")
 
 	err = deleteVirtualNetWork(ctx, jobID)
 	if err != nil {
 		log.Fatalf("cannot delete virtual network:%+v", err)
 	}
-	log.Println("deleted virtual network")
+	log.Warn("deleted virtual network")
 
-	log.Println("success deleted virtual machine.")
+	log.Info("success deleted virtual machine.")
 }
 
 func getPublicIP(x int) string {
@@ -497,17 +497,6 @@ func deleteNetWorkInterface(ctx context.Context, x int) error {
 }
 
 func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int) (*armcompute.VirtualMachine, error) {
-	//require ssh key for authentication on linux
-	// sshPublicKeyPath := "~/.ssh/id_rsa.pub"
-	// var sshBytes []byte
-	// _, err := os.Stat(sshPublicKeyPath)
-	// if err == nil {
-	// 	sshBytes, err = os.ReadFile(sshPublicKeyPath)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// }
-
 	parameters := armcompute.VirtualMachine{
 		Location: to.Ptr(location),
 		Identity: &armcompute.VirtualMachineIdentity{
@@ -516,13 +505,6 @@ func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int)
 		Properties: &armcompute.VirtualMachineProperties{
 			StorageProfile: &armcompute.StorageProfile{
 				ImageReference: &armcompute.ImageReference{
-					// search image reference
-					// az vm image list --output table
-					// Offer:     to.Ptr("WindowsServer"),
-					// Publisher: to.Ptr("MicrosoftWindowsServer"),
-					// SKU:       to.Ptr("2019-Datacenter"),
-					// Version:   to.Ptr("latest"),
-					// require ssh key for authentication on linux
 					Offer:     to.Ptr("UbuntuServer"),
 					Publisher: to.Ptr("Canonical"),
 					SKU:       to.Ptr("18.04-LTS"),
@@ -538,25 +520,14 @@ func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int)
 					//DiskSizeGB: to.Ptr[int32](100), // default 127G
 				},
 			},
+			Priority: to.Ptr(armcompute.VirtualMachinePriorityTypesSpot),
 			HardwareProfile: &armcompute.HardwareProfile{
-				VMSize: to.Ptr(armcompute.VirtualMachineSizeTypes("Standard_B1ls")), // VM size include vCPUs,RAM,Data Disks,Temp storage.
+				VMSize: to.Ptr(armcompute.VirtualMachineSizeTypes("Standard_B2pts_v2")), // Standard_B2pts_v2
 			},
-			OSProfile: &armcompute.OSProfile{ //
+			OSProfile: &armcompute.OSProfile{
 				ComputerName:  to.Ptr(fmt.Sprintf("%s-%d", vmName, x)),
 				AdminUsername: to.Ptr("azureuser"),
 				AdminPassword: to.Ptr("Password01!@#"),
-				//require ssh key for authentication on linux
-				// LinuxConfiguration: &armcompute.LinuxConfiguration{
-				// 	DisablePasswordAuthentication: to.Ptr(true),
-				// 	SSH: &armcompute.SSHConfiguration{
-				// 		PublicKeys: []*armcompute.SSHPublicKey{
-				// 			{
-				// 				Path:    to.Ptr(fmt.Sprintf("/home/%s/.ssh/authorized_keys", "azureuser")),
-				// 				KeyData: to.Ptr(string(sshBytes)),
-				// 			},
-				// 		},
-				// 	},
-				// },
 			},
 			NetworkProfile: &armcompute.NetworkProfile{
 				NetworkInterfaces: []*armcompute.NetworkInterfaceReference{
