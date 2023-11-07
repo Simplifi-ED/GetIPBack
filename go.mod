@@ -1,4 +1,4 @@
-module github.com/MarouaneBouaricha/ip-lookup
+module github.com/Simplifi-ED/getipback
 
 go 1.19
 

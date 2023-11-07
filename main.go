@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,18 +18,15 @@ import (
 )
 
 var subscriptionId string
-
-const (
-	resourceGroupName = "rg-marouane"
-	vmName            = "happybit-vm"
-	vnetName          = "happybit-vnet"
-	subnetName        = "happybit-subnet"
-	nicName           = "happybit-nic"
-	diskName          = "happybit-disk"
-	publicIPName      = "happybit-public-ip"
-	location          = "francecentral"
-	desiredIP         = "52.143.143.195"
-)
+var resourceGroupName string = os.Getenv("DETECTIVE_RG")
+var vmName string = os.Getenv("DETECTIVE_VM_NAME")
+var vnetName string = os.Getenv("DETECTIVE_VNET_NAME")
+var subnetName string = os.Getenv("DETECTIVE_SNET_NAME")
+var nicName string = os.Getenv("DETECTIVE_NIC_NAME")
+var diskName string = os.Getenv("DETECTIVE_DISK_NAME")
+var publicIPName string = os.Getenv("DETECTIVE_PIP_NAME")
+var location string = os.Getenv("DETECTIVE_LOCATION")
+var desiredIP string = os.Getenv("DETECTIVE_MAGIC_IP")
 
 var (
 	resourcesClientFactory *armresources.ClientFactory
@@ -51,8 +49,14 @@ func main() {
 	if len(subscriptionId) == 0 {
 		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
 	}
+
 	log.Info("Creating VMs...")
-	numJobs := 5
+
+	numJobs, err := strconv.Atoi(os.Getenv("DETECTIVE_CONCURRENT_JOBS"))
+	if err != nil {
+		fmt.Println("Error during conversion")
+		return
+	}
 
 	var wg sync.WaitGroup
 	resultChan := make(chan string, numJobs)
