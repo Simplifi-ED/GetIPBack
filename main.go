@@ -110,7 +110,7 @@ func associatePublicIP(jobID int, tasks <-chan int, wg *sync.WaitGroup) {
 		if err != nil {
 			log.Fatalf("cannot create public IP address:%+v", err)
 		}
-		log.Info("Created public IP address: %s", *publicIP.ID)
+		log.Info("Created public IP address", "PublicIPid", *publicIP.ID)
 
 		vmNic, err := interfacesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", nicName, jobID), nil)
 		if err != nil {
@@ -153,18 +153,18 @@ func associatePublicIP(jobID int, tasks <-chan int, wg *sync.WaitGroup) {
 			log.Fatal(err)
 		}
 
-		log.Info("Public IP Associated: %s", *resp.Name)
+		log.Info("Public IP Associated", "NicName", *resp.Name)
 
 		time.Sleep(10 * time.Second)
 
 		allocatedIP := getPublicIP(jobID)
 
 		if allocatedIP == desiredIP {
-			log.Info("Job %d: Allocated IP address matches the desired IP address: %s \n", jobID, allocatedIP)
+			log.Info("Allocated IP address matches the desired IP address. \n", "Job", jobID, "IP", allocatedIP)
 
 		}
 		if allocatedIP != desiredIP {
-			log.Info("Job %d: Allocated IP address (%s) does not match the desired IP address (%s). \n", jobID, allocatedIP, desiredIP)
+			log.Info("Allocated IP address does not match the desired IP address. \n", "Job", jobID, "AllocatedIP", allocatedIP, "DesiredIP", desiredIP)
 			dissociateAndDeletePublicIP(ctx, jobID)
 		}
 
@@ -210,7 +210,7 @@ func dissociateAndDeletePublicIP(ctx context.Context, jobID int) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Info("Public IP Disassociated: %s", *resp.Name)
+	log.Info("Public IP Disassociated", "NicName", *resp.Name)
 
 	err = deletePublicIP(ctx, jobID)
 	if err != nil {
@@ -253,28 +253,28 @@ func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 	if err != nil {
 		log.Fatalf("cannot create virtual network:%+v", err)
 	}
-	log.Info("Created virtual network: %s", *virtualNetwork.ID)
+	log.Info("Created Vnet", "VirtualNetworkID", *virtualNetwork.ID)
 
 	subnet, err := createSubnets(ctx, jobID)
 	if err != nil {
 		log.Fatalf("cannot create subnet:%+v", err)
 	}
-	log.Info("Created subnet: %s", *subnet.ID)
+	log.Info("Created subnet", "SubnetID", *subnet.ID)
 
 	netWorkInterface, err := createNetWorkInterface(ctx, *subnet.ID, jobID)
 	if err != nil {
 		log.Fatalf("cannot create network interface:%+v", err)
 	}
-	log.Info("Created network interface: %s", *netWorkInterface.ID)
+	log.Info("Created network interface", "NicID", *netWorkInterface.ID)
 
 	networkInterfaceID := netWorkInterface.ID
 	virtualMachine, err := createVirtualMachine(ctx, *networkInterfaceID, jobID)
 	if err != nil {
 		log.Fatalf("cannot create virual machine:%+v", err)
 	}
-	log.Info("Created network virual machine: %s", *virtualMachine.ID)
+	log.Info("Created network virual machine", "vmID", *virtualMachine.ID)
 
-	resultChan <- fmt.Sprintf("Job %d: Virtual machine created successfully", jobID)
+	resultChan <- fmt.Sprintf("Virtual machine created successfully", "Job", jobID)
 
 }
 
