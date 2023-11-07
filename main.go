@@ -505,10 +505,10 @@ func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int)
 		Properties: &armcompute.VirtualMachineProperties{
 			StorageProfile: &armcompute.StorageProfile{
 				ImageReference: &armcompute.ImageReference{
-					Offer:     to.Ptr("UbuntuServer"),
+					Offer:     to.Ptr("0001-com-ubuntu-server-jammy"),
 					Publisher: to.Ptr("Canonical"),
-					SKU:       to.Ptr("18.04-LTS"),
-					Version:   to.Ptr("latest"),
+					SKU:       to.Ptr("22_04-lts-arm64"),
+					Version:   to.Ptr("22.04.202310260"),
 				},
 				OSDisk: &armcompute.OSDisk{
 					Name:         to.Ptr(fmt.Sprintf("%s-%d", diskName, x)),
