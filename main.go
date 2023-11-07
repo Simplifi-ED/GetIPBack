@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License. See License.txt in the project root for license information.
-
 package main
 
 import (
@@ -54,8 +51,8 @@ func main() {
 	if len(subscriptionId) == 0 {
 		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
 	}
-	fmt.Printf("Running jobs...")
-	numJobs := 10
+	fmt.Println("Creating VMs...")
+	numJobs := 5
 
 	var wg sync.WaitGroup
 	resultChan := make(chan string, numJobs)
@@ -73,6 +70,145 @@ func main() {
 	for result := range resultChan {
 		fmt.Println(result)
 	}
+
+	fmt.Println("Assiging Public IPs...")
+
+	var wgPIP sync.WaitGroup
+	resultPIPChan := make(chan string, numJobs)
+
+	for i := 0; i < numJobs; i++ {
+		wgPIP.Add(1)
+		go associatePublicIP(&wgPIP, resultPIPChan, i)
+	}
+
+	go func() {
+		wgPIP.Wait()
+		close(resultPIPChan)
+	}()
+
+	for result := range resultPIPChan {
+		fmt.Println(result)
+	}
+
+}
+
+func associatePublicIP(wgPIP *sync.WaitGroup, resultPIPChan chan string, jobID int) {
+	defer wgPIP.Done()
+	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
+	if len(subscriptionId) == 0 {
+		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
+	}
+
+	ctx := context.Background()
+
+	publicIP, err := createPublicIP(ctx, jobID)
+	if err != nil {
+		log.Fatalf("cannot create public IP address:%+v", err)
+	}
+	log.Printf("Created public IP address: %s", *publicIP.ID)
+
+	vmNic, err := interfacesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", nicName, jobID), nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	vmSubnet, err := subnetsClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", vnetName, jobID), fmt.Sprintf("%s-%d", subnetName, jobID), nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	parameters := armnetwork.Interface{
+		Location: to.Ptr(location),
+		Properties: &armnetwork.InterfacePropertiesFormat{
+			IPConfigurations: []*armnetwork.InterfaceIPConfiguration{
+				{
+					Name: to.Ptr("ipConfig"),
+					Properties: &armnetwork.InterfaceIPConfigurationPropertiesFormat{
+						PublicIPAddress: &armnetwork.PublicIPAddress{
+							ID: to.Ptr(*publicIP.ID),
+						},
+						PrivateIPAllocationMethod: to.Ptr(armnetwork.IPAllocationMethodDynamic),
+						Subnet: &armnetwork.Subnet{
+							ID: to.Ptr(*vmSubnet.ID),
+						},
+					},
+				},
+			},
+		},
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	resp, err := pollerResponse.PollUntilDone(ctx, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("Public IP Associated: %s", *resp.Name)
+
+	time.Sleep(10 * time.Second)
+
+	allocatedIP := getPublicIP(jobID)
+
+	if allocatedIP == desiredIP {
+		resultPIPChan <- fmt.Sprintf("Job %d: Allocated IP address matches the desired IP address: %s", jobID, allocatedIP)
+	}
+	if allocatedIP != desiredIP {
+		resultPIPChan <- fmt.Sprintf("Job %d: Allocated IP address (%s) does not match the desired IP address (%s).", jobID, allocatedIP, desiredIP)
+		dissociateAndDeletePublicIP(ctx, jobID)
+	}
+
+}
+
+func dissociateAndDeletePublicIP(ctx context.Context, jobID int) {
+	vmNic, err := interfacesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", nicName, jobID), nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	vmSubnet, err := subnetsClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", vnetName, jobID), fmt.Sprintf("%s-%d", subnetName, jobID), nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	parameters := armnetwork.Interface{
+		Location: to.Ptr(location),
+		Properties: &armnetwork.InterfacePropertiesFormat{
+			IPConfigurations: []*armnetwork.InterfaceIPConfiguration{
+				{
+					Name: to.Ptr("ipConfig"),
+					Properties: &armnetwork.InterfaceIPConfigurationPropertiesFormat{
+						PrivateIPAllocationMethod: to.Ptr(armnetwork.IPAllocationMethodDynamic),
+						Subnet: &armnetwork.Subnet{
+							ID: to.Ptr(*vmSubnet.ID),
+						},
+					},
+				},
+			},
+		},
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	resp, err := pollerResponse.PollUntilDone(ctx, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("Public IP Disassociated: %s", *resp.Name)
+
+	err = deletePublicIP(ctx, jobID)
+	if err != nil {
+		log.Fatalf("cannot delete public IP address:%+v", err)
+	}
+	log.Println("deleted public IP address")
 
 }
 
@@ -117,13 +253,7 @@ func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 	}
 	log.Printf("Created subnet: %s", *subnet.ID)
 
-	publicIP, err := createPublicIP(ctx, jobID)
-	if err != nil {
-		log.Fatalf("cannot create public IP address:%+v", err)
-	}
-	log.Printf("Created public IP address: %s", *publicIP.ID)
-
-	netWorkInterface, err := createNetWorkInterface(ctx, *subnet.ID, *publicIP.ID, jobID)
+	netWorkInterface, err := createNetWorkInterface(ctx, *subnet.ID, jobID)
 	if err != nil {
 		log.Fatalf("cannot create network interface:%+v", err)
 	}
@@ -136,17 +266,8 @@ func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 	}
 	log.Printf("Created network virual machine: %s", *virtualMachine.ID)
 
-	log.Println("Virtual machine created successfully")
-	fmt.Println("Waiting for Public IP address to be allocated...")
-	time.Sleep(10 * time.Second)
-	allocatedIP := getPublicIP(jobID)
-	if allocatedIP == desiredIP {
-		resultChan <- fmt.Sprintf("Job %d: Allocated IP address matches the desired IP address: %s", jobID, allocatedIP)
-	}
-	if allocatedIP != desiredIP {
-		resultChan <- fmt.Sprintf("Job %d: Allocated IP address (%s) does not match the desired IP address (%s).", jobID, allocatedIP, desiredIP)
-		cleanup(jobID)
-	}
+	resultChan <- fmt.Sprintf("Job %d: Virtual machine created successfully", jobID)
+
 }
 
 func cleanup(jobID int) {
@@ -320,12 +441,11 @@ func deletePublicIP(ctx context.Context, x int) error {
 	return nil
 }
 
-func createNetWorkInterface(ctx context.Context, subnetID string, publicIPID string, x int) (*armnetwork.Interface, error) {
+func createNetWorkInterface(ctx context.Context, subnetID string, x int) (*armnetwork.Interface, error) {
 
 	parameters := armnetwork.Interface{
 		Location: to.Ptr(location),
 		Properties: &armnetwork.InterfacePropertiesFormat{
-			//NetworkSecurityGroup:
 			IPConfigurations: []*armnetwork.InterfaceIPConfiguration{
 				{
 					Name: to.Ptr("ipConfig"),
@@ -333,9 +453,6 @@ func createNetWorkInterface(ctx context.Context, subnetID string, publicIPID str
 						PrivateIPAllocationMethod: to.Ptr(armnetwork.IPAllocationMethodDynamic),
 						Subnet: &armnetwork.Subnet{
 							ID: to.Ptr(subnetID),
-						},
-						PublicIPAddress: &armnetwork.PublicIPAddress{
-							ID: to.Ptr(publicIPID),
 						},
 					},
 				},
@@ -404,7 +521,7 @@ func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int)
 					Version:   to.Ptr("latest"),
 				},
 				OSDisk: &armcompute.OSDisk{
-					Name:         to.Ptr(fmt.Sprintf("%s-%s", diskName, string(x))),
+					Name:         to.Ptr(fmt.Sprintf("%s-%d", diskName, x)),
 					CreateOption: to.Ptr(armcompute.DiskCreateOptionTypesFromImage),
 					Caching:      to.Ptr(armcompute.CachingTypesReadWrite),
 					ManagedDisk: &armcompute.ManagedDiskParameters{
@@ -417,7 +534,7 @@ func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int)
 				VMSize: to.Ptr(armcompute.VirtualMachineSizeTypes("Standard_B1ls")), // VM size include vCPUs,RAM,Data Disks,Temp storage.
 			},
 			OSProfile: &armcompute.OSProfile{ //
-				ComputerName:  to.Ptr(fmt.Sprintf("%s-%s", vmName, string(x))),
+				ComputerName:  to.Ptr(fmt.Sprintf("%s-%d", vmName, x)),
 				AdminUsername: to.Ptr("azureuser"),
 				AdminPassword: to.Ptr("Password01!@#"),
 				//require ssh key for authentication on linux
@@ -443,7 +560,7 @@ func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int)
 		},
 	}
 
-	pollerResponse, err := virtualMachinesClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%s", vmName, string(x)), parameters, nil)
+	pollerResponse, err := virtualMachinesClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", vmName, x), parameters, nil)
 	if err != nil {
 		return nil, err
 	}
