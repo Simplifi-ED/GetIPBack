@@ -40,5 +40,9 @@ go1.19.13
 
 ## Running the program
 ```
+export AZURE_SUBSCRIPTION_ID=....
+```
+
+```
 # go run main.go
 ```
