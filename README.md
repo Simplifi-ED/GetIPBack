@@ -18,6 +18,7 @@ for i := 0; i < numJobs; i++ {
 }
 ```
 ### Adjusting the iterations
+```
 log.Info("Running Jobs...")
 var wgPIP sync.WaitGroup
 tasks := make(chan int)
@@ -30,6 +31,7 @@ for i := 0; i < numJobs; i++ {
 for i := 1; i <= 10; i++ { //Number of Iterations
     tasks <- i
 }
+```
 
 ## Requirements
 ```
