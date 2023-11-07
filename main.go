@@ -73,27 +73,28 @@ func main() {
 
 	fmt.Println("Assiging Public IPs...")
 
+	fmt.Println("Running Jobs...")
 	var wgPIP sync.WaitGroup
-	resultPIPChan := make(chan string, numJobs)
+	tasks := make(chan int)
 
 	for i := 0; i < numJobs; i++ {
 		wgPIP.Add(1)
-		go associatePublicIP(&wgPIP, resultPIPChan, i)
+		go associatePublicIP(i, tasks, &wgPIP)
 	}
 
-	go func() {
-		wgPIP.Wait()
-		close(resultPIPChan)
-	}()
-
-	for result := range resultPIPChan {
-		fmt.Println(result)
+	for i := 1; i <= 50; i++ {
+		tasks <- i
 	}
+
+	// Close the task channel to signal that no more tasks will be added.
+	close(tasks)
+
+	// Wait for all worker goroutines to finish.
+	wgPIP.Wait()
 
 }
 
-func associatePublicIP(wgPIP *sync.WaitGroup, resultPIPChan chan string, jobID int) {
-	defer wgPIP.Done()
+func associatePublicIP(jobID int, tasks <-chan int, wg *sync.WaitGroup) {
 	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
 	if len(subscriptionId) == 0 {
 		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
@@ -101,65 +102,72 @@ func associatePublicIP(wgPIP *sync.WaitGroup, resultPIPChan chan string, jobID i
 
 	ctx := context.Background()
 
-	publicIP, err := createPublicIP(ctx, jobID)
-	if err != nil {
-		log.Fatalf("cannot create public IP address:%+v", err)
-	}
-	log.Printf("Created public IP address: %s", *publicIP.ID)
+	defer wg.Done()
 
-	vmNic, err := interfacesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", nicName, jobID), nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	vmSubnet, err := subnetsClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", vnetName, jobID), fmt.Sprintf("%s-%d", subnetName, jobID), nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	parameters := armnetwork.Interface{
-		Location: to.Ptr(location),
-		Properties: &armnetwork.InterfacePropertiesFormat{
-			IPConfigurations: []*armnetwork.InterfaceIPConfiguration{
-				{
-					Name: to.Ptr("ipConfig"),
-					Properties: &armnetwork.InterfaceIPConfigurationPropertiesFormat{
-						PublicIPAddress: &armnetwork.PublicIPAddress{
-							ID: to.Ptr(*publicIP.ID),
-						},
-						PrivateIPAllocationMethod: to.Ptr(armnetwork.IPAllocationMethodDynamic),
-						Subnet: &armnetwork.Subnet{
-							ID: to.Ptr(*vmSubnet.ID),
+	for task := range tasks {
+		_ = task
+		publicIP, err := createPublicIP(ctx, jobID)
+		if err != nil {
+			log.Fatalf("cannot create public IP address:%+v", err)
+		}
+		log.Printf("Created public IP address: %s", *publicIP.ID)
+
+		vmNic, err := interfacesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", nicName, jobID), nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		vmSubnet, err := subnetsClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", vnetName, jobID), fmt.Sprintf("%s-%d", subnetName, jobID), nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		parameters := armnetwork.Interface{
+			Location: to.Ptr(location),
+			Properties: &armnetwork.InterfacePropertiesFormat{
+				IPConfigurations: []*armnetwork.InterfaceIPConfiguration{
+					{
+						Name: to.Ptr("ipConfig"),
+						Properties: &armnetwork.InterfaceIPConfigurationPropertiesFormat{
+							PublicIPAddress: &armnetwork.PublicIPAddress{
+								ID: to.Ptr(*publicIP.ID),
+							},
+							PrivateIPAllocationMethod: to.Ptr(armnetwork.IPAllocationMethodDynamic),
+							Subnet: &armnetwork.Subnet{
+								ID: to.Ptr(*vmSubnet.ID),
+							},
 						},
 					},
 				},
 			},
-		},
-	}
-	if err != nil {
-		log.Fatal(err)
-	}
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
 
-	pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
+		pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
+		if err != nil {
+			log.Fatal(err)
+		}
 
-	resp, err := pollerResponse.PollUntilDone(ctx, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
+		resp, err := pollerResponse.PollUntilDone(ctx, nil)
+		if err != nil {
+			log.Fatal(err)
+		}
 
-	log.Printf("Public IP Associated: %s", *resp.Name)
+		log.Printf("Public IP Associated: %s", *resp.Name)
 
-	time.Sleep(10 * time.Second)
+		time.Sleep(10 * time.Second)
 
-	allocatedIP := getPublicIP(jobID)
+		allocatedIP := getPublicIP(jobID)
 
-	if allocatedIP == desiredIP {
-		resultPIPChan <- fmt.Sprintf("Job %d: Allocated IP address matches the desired IP address: %s", jobID, allocatedIP)
-	}
-	if allocatedIP != desiredIP {
-		resultPIPChan <- fmt.Sprintf("Job %d: Allocated IP address (%s) does not match the desired IP address (%s).", jobID, allocatedIP, desiredIP)
-		dissociateAndDeletePublicIP(ctx, jobID)
+		if allocatedIP == desiredIP {
+			fmt.Printf("Job %d: Allocated IP address matches the desired IP address: %s \n", jobID, allocatedIP)
+
+		}
+		if allocatedIP != desiredIP {
+			fmt.Printf("Job %d: Allocated IP address (%s) does not match the desired IP address (%s). \n", jobID, allocatedIP, desiredIP)
+			dissociateAndDeletePublicIP(ctx, jobID)
+		}
+
 	}
 
 }
