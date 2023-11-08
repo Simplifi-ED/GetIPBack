@@ -18,6 +18,7 @@ import (
 )
 
 var subscriptionId string
+var numIterations int
 var resourceGroupName string = os.Getenv("DETECTIVE_RG")
 var vmName string = os.Getenv("DETECTIVE_VM_NAME")
 var vnetName string = os.Getenv("DETECTIVE_VNET_NAME")
@@ -86,7 +87,12 @@ func main() {
 		go associatePublicIP(i, tasks, &wgPIP)
 	}
 
-	for i := 1; i <= 10; i++ {
+	numIterations, err := strconv.Atoi(os.Getenv("DETECTIVE_NUM_ITERATION"))
+	if err != nil {
+		log.Fatal("Could not find DETECTIVE_NUM_ITERATION")
+		return
+	}
+	for i := 1; i <= numIterations; i++ {
 		tasks <- i
 	}
 
