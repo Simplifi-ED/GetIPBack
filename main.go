@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"sync"
@@ -20,7 +22,7 @@ import (
 var subscriptionId string
 var numIterations int
 var IPBackLog *log.Logger
-var InfoLog *log.Logger
+var spot *bool
 var resourceGroupName string = os.Getenv("DETECTIVE_RG")
 var vmName string = os.Getenv("DETECTIVE_VM_NAME")
 var vnetName string = os.Getenv("DETECTIVE_VNET_NAME")
@@ -48,21 +50,21 @@ var (
 )
 
 func main() {
-	// Logs Directory
-	logdirPath := "/usr/local/var/log/IPBack"
-
-	if _, err := os.Stat(logdirPath); os.IsNotExist(err) {
-		err := os.MkdirAll(logdirPath, 0755)
+	spot = flag.Bool("spot", true, "Specify if spot is true or false")
+	logdirPath := flag.String("logpath", "/usr/local/var/log/IPBack", "Specify logs directory path")
+	flag.Parse()
+	if _, err := os.Stat(*logdirPath); os.IsNotExist(err) {
+		err := os.MkdirAll(*logdirPath, 0755)
 		if err != nil {
 			log.Fatal("Error creating directory:", "Error", err)
 		}
 	}
-	IPBackLogFile, err := openLogFile(fmt.Sprintf("%s/detective-ip.log", logdirPath))
+	IPBackLogFile, err := openLogFile(fmt.Sprintf("%s/detective-ip.log", *logdirPath))
 	if err != nil {
 		log.Fatal(fmt.Sprintf("Failed to open log file [%v.]", err))
 	}
 	defer IPBackLogFile.Close()
-	InfoLogFile, err := openLogFile(fmt.Sprintf("%s/detective-info.log", logdirPath))
+	InfoLogFile, err := openLogFile(fmt.Sprintf("%s/detective-info.log", *logdirPath))
 	if err != nil {
 		log.Fatal(fmt.Sprintf("Failed to open log file [%v.]", err))
 	}
@@ -72,14 +74,8 @@ func main() {
 		ReportTimestamp: true,
 		TimeFormat:      time.Kitchen,
 	})
-	InfoLog = log.NewWithOptions(os.Stderr, log.Options{
-		ReportCaller:    false,
-		ReportTimestamp: true,
-		TimeFormat:      time.Kitchen,
-	})
 	IPBackLog.SetOutput(IPBackLogFile)
-	InfoLog.SetOutput(InfoLogFile)
-
+	log.SetOutput(io.MultiWriter(InfoLogFile, os.Stdout))
 	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
 	if len(subscriptionId) == 0 {
 		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
@@ -551,6 +547,10 @@ func deleteNetWorkInterface(ctx context.Context, x int) error {
 }
 
 func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int) (*armcompute.VirtualMachine, error) {
+	Priority := to.Ptr(armcompute.VirtualMachinePriorityTypesSpot)
+	if !*spot {
+		Priority = to.Ptr(armcompute.VirtualMachinePriorityTypesRegular)
+	}
 	parameters := armcompute.VirtualMachine{
 		Location: to.Ptr(location),
 		Identity: &armcompute.VirtualMachineIdentity{
@@ -574,7 +574,7 @@ func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int)
 					//DiskSizeGB: to.Ptr[int32](100), // default 127G
 				},
 			},
-			Priority: to.Ptr(armcompute.VirtualMachinePriorityTypesSpot),
+			Priority: Priority,
 			HardwareProfile: &armcompute.HardwareProfile{
 				VMSize: to.Ptr(armcompute.VirtualMachineSizeTypes("Standard_B2pts_v2")), // Standard_B2pts_v2
 			},
