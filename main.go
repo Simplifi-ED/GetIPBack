@@ -20,6 +20,7 @@ import (
 var subscriptionId string
 var numIterations int
 var IPBackLog *log.Logger
+var InfoLog *log.Logger
 var resourceGroupName string = os.Getenv("DETECTIVE_RG")
 var vmName string = os.Getenv("DETECTIVE_VM_NAME")
 var vnetName string = os.Getenv("DETECTIVE_VNET_NAME")
@@ -47,14 +48,23 @@ var (
 )
 
 func main() {
-	IPBackLogFile, err := openLogFile("/var/log/detective-ip.log")
+	// Logs Directory
+	logdirPath := "/usr/local/var/log/IPBack"
+
+	if _, err := os.Stat(logdirPath); os.IsNotExist(err) {
+		err := os.MkdirAll(logdirPath, 0755)
+		if err != nil {
+			log.Fatal("Error creating directory:", "Error", err)
+		}
+	}
+	IPBackLogFile, err := openLogFile(fmt.Sprintf("%s/detective-ip.log", logdirPath))
 	if err != nil {
-		log.Fatal(fmt.Sprintf("Failed to open log file %v.", err))
+		log.Fatal(fmt.Sprintf("Failed to open log file [%v.]", err))
 	}
 	defer IPBackLogFile.Close()
-	InfoLogFile, err := openLogFile("/var/log/detective-Info.log")
+	InfoLogFile, err := openLogFile(fmt.Sprintf("%s/detective-info.log", logdirPath))
 	if err != nil {
-		log.Fatal(fmt.Sprintf("Failed to open log file %v.", err))
+		log.Fatal(fmt.Sprintf("Failed to open log file [%v.]", err))
 	}
 	defer InfoLogFile.Close()
 	IPBackLog = log.NewWithOptions(os.Stderr, log.Options{
@@ -62,8 +72,13 @@ func main() {
 		ReportTimestamp: true,
 		TimeFormat:      time.Kitchen,
 	})
+	InfoLog = log.NewWithOptions(os.Stderr, log.Options{
+		ReportCaller:    false,
+		ReportTimestamp: true,
+		TimeFormat:      time.Kitchen,
+	})
 	IPBackLog.SetOutput(IPBackLogFile)
-	log.SetOutput(InfoLogFile)
+	InfoLog.SetOutput(InfoLogFile)
 
 	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
 	if len(subscriptionId) == 0 {
@@ -313,7 +328,7 @@ func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 	}
 	log.Info("Created network virual machine", "vmID", *virtualMachine.ID)
 
-	resultChan <- fmt.Sprintf("Virtual machine created successfully", "Job", jobID)
+	resultChan <- fmt.Sprintf("Job %d Virtual machine created successfully.", jobID)
 
 }
 
