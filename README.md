@@ -3,6 +3,10 @@
 
 ## TL&DR
 
+### Description
+The program runs N VMs of size Standard_B2pts_v2 which represents the workers and N iterations and stops when the ip is found.
+
+## Installation
 get the go binaries from releases:
 
 ```shell
@@ -12,6 +16,7 @@ tar -xcf GetIPBack_0.0.4-rc2_linux_amd64.tar.gz
 (sudo) chmod +x /usr/local/bin/GetIPBack
 ```
 
+## Executing
 Export the env variables:
 
 ```
@@ -37,5 +42,14 @@ az login
 GetIPBack
 ```
 
-## Description
-The program runs N VMs of size Standard_B2pts_v2 which represents the workers and N iterations.
+## Optional flags
+### spot
+default to true
+```shell
+GetIPBack -spot=false
+```
+### logpath
+default to /usr/local/var/log/IPBack
+```shell
+GetIPBack -logpath="your/log/path"
+```
