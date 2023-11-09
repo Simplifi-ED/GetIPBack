@@ -19,6 +19,7 @@ import (
 
 var subscriptionId string
 var numIterations int
+var IPBackLog *log.Logger
 var resourceGroupName string = os.Getenv("DETECTIVE_RG")
 var vmName string = os.Getenv("DETECTIVE_VM_NAME")
 var vnetName string = os.Getenv("DETECTIVE_VNET_NAME")
@@ -46,6 +47,25 @@ var (
 )
 
 func main() {
+	IPBackLogFile, err := openLogFile("detective-ip.log")
+	if err != nil {
+		log.Fatal(fmt.Sprintf("Failed to open log file %v.", err))
+	}
+	defer IPBackLogFile.Close()
+	InfoLogFile, err := openLogFile("Info.log")
+	if err != nil {
+		log.Fatal(fmt.Sprintf("Failed to open log file %v.", err))
+	}
+	defer InfoLogFile.Close()
+	IPBackLog = log.NewWithOptions(os.Stderr, log.Options{
+		ReportCaller:    false,
+		ReportTimestamp: true,
+		TimeFormat:      time.Kitchen,
+	})
+	// IPBackLog = log.New(IPBackLogFile, "[info]", log.LstdFlags|log.Lshortfile|log.Lmicroseconds)
+	IPBackLog.SetOutput(IPBackLogFile)
+	// infoLog := log.New(InfoLogFile, "[info]", log.LstdFlags|log.Lshortfile|log.Lmicroseconds)
+
 	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
 	if len(subscriptionId) == 0 {
 		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
@@ -55,7 +75,7 @@ func main() {
 
 	numJobs, err := strconv.Atoi(os.Getenv("DETECTIVE_CONCURRENT_JOBS"))
 	if err != nil {
-		fmt.Println("Error during conversion")
+		fmt.Println("Error getting DETECTIVE_CONCURRENT_JOBS")
 		return
 	}
 
@@ -73,7 +93,7 @@ func main() {
 	}()
 
 	for result := range resultChan {
-		fmt.Println(result)
+		log.Info(result)
 	}
 
 	log.Info("Assiging Public IPs...")
@@ -89,7 +109,7 @@ func main() {
 
 	numIterations, err := strconv.Atoi(os.Getenv("DETECTIVE_NUM_ITERATION"))
 	if err != nil {
-		log.Fatal("Could not find DETECTIVE_NUM_ITERATION")
+		log.Fatal("Error getting DETECTIVE_NUM_ITERATION")
 		return
 	}
 	for i := 1; i <= numIterations; i++ {
@@ -102,6 +122,14 @@ func main() {
 	// Wait for all worker goroutines to finish.
 	wgPIP.Wait()
 
+}
+
+func openLogFile(path string) (*os.File, error) {
+	logFile, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+	if err != nil {
+		return nil, err
+	}
+	return logFile, nil
 }
 
 func associatePublicIP(jobID int, tasks <-chan int, wg *sync.WaitGroup) {
@@ -170,10 +198,12 @@ func associatePublicIP(jobID int, tasks <-chan int, wg *sync.WaitGroup) {
 		allocatedIP := getPublicIP(jobID)
 
 		if allocatedIP == desiredIP {
+			IPBackLog.Info(fmt.Sprintf("Job %d: Allocated IP address matches the desired IP address: %s  \x1b[32m[Success]\n", jobID, allocatedIP))
 			log.Info("Allocated IP address matches the desired IP address. \n", "Job", jobID, "IP", allocatedIP)
 
 		}
 		if allocatedIP != desiredIP {
+			IPBackLog.Info(fmt.Sprintf("Job %d: Allocated IP address (%s) does not match the desired IP address (%s). \n", jobID, allocatedIP, desiredIP))
 			log.Info("Allocated IP address does not match the desired IP address. \n", "Job", jobID, "AllocatedIP", allocatedIP, "DesiredIP", desiredIP)
 			dissociateAndDeletePublicIP(ctx, jobID)
 		}
@@ -258,7 +288,7 @@ func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 	virtualMachinesClient = computeClientFactory.NewVirtualMachinesClient()
 	disksClient = computeClientFactory.NewDisksClient()
 
-	log.Info("start creating virtual machine...")
+	log.Info(fmt.Sprintf("Job: %d start creating virtual machine (%s)...", jobID, fmt.Sprintf("%s-%d", vmName, jobID)))
 	virtualNetwork, err := createVirtualNetwork(ctx, jobID)
 	if err != nil {
 		log.Fatalf("cannot create virtual network:%+v", err)
