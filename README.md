@@ -35,10 +35,13 @@ export DETECTIVE_CONCURRENT_JOBS=
 export AZURE_SUBSCRIPTION_ID=
 ```
 
-then, 
+login to azure 
 
 ```shell
 az login
+```
+Run the binary
+```shell
 GetIPBack
 ```
 
