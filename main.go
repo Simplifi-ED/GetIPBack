@@ -23,6 +23,8 @@ var subscriptionId string
 var numIterations int
 var IPBackLog *log.Logger
 var spot *bool
+var cancel context.CancelFunc
+var gctx context.Context
 var resourceGroupName string = os.Getenv("DETECTIVE_RG")
 var vmName string = os.Getenv("DETECTIVE_VM_NAME")
 var vnetName string = os.Getenv("DETECTIVE_VNET_NAME")
@@ -50,6 +52,8 @@ var (
 )
 
 func main() {
+	gctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
 	spot = flag.Bool("spot", true, "Specify if spot is true or false")
 	logdirPath := flag.String("logpath", "/usr/local/var/log/IPBack", "Specify logs directory path")
 	flag.Parse()
@@ -75,7 +79,7 @@ func main() {
 		TimeFormat:      time.Kitchen,
 	})
 	IPBackLog.SetOutput(IPBackLogFile)
-	log.SetOutput(io.MultiWriter(InfoLogFile, os.Stdout))
+	log.SetOutput(io.MultiWriter(os.Stdout, InfoLogFile))
 	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
 	if len(subscriptionId) == 0 {
 		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
@@ -114,7 +118,7 @@ func main() {
 
 	for i := 0; i < numJobs; i++ {
 		wgPIP.Add(1)
-		go associatePublicIP(i, tasks, &wgPIP)
+		go associatePublicIP(gctx, i, tasks, &wgPIP)
 	}
 
 	numIterations, err := strconv.Atoi(os.Getenv("DETECTIVE_NUM_ITERATION"))
@@ -142,19 +146,19 @@ func openLogFile(path string) (*os.File, error) {
 	return logFile, nil
 }
 
-func associatePublicIP(jobID int, tasks <-chan int, wg *sync.WaitGroup) {
+func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *sync.WaitGroup) {
 	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
 	if len(subscriptionId) == 0 {
 		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
 	}
 
-	ctx := context.Background()
+	lctx := context.Background()
 
 	defer wg.Done()
 
 	for task := range tasks {
 		_ = task
-		publicIP, err := createPublicIP(ctx, jobID)
+		publicIP, err := createPublicIP(lctx, jobID)
 		if err != nil {
 			log.Fatalf("cannot create public IP address:%+v", err)
 		}
@@ -204,13 +208,18 @@ func associatePublicIP(jobID int, tasks <-chan int, wg *sync.WaitGroup) {
 		log.Info("Public IP Associated", "NicName", *resp.Name)
 
 		time.Sleep(10 * time.Second)
-
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		allocatedIP := getPublicIP(jobID)
 
 		if allocatedIP == desiredIP {
 			IPBackLog.Info(fmt.Sprintf("Job %d: Allocated IP address matches the desired IP address: %s  \x1b[32m[Success]\n", jobID, allocatedIP))
 			log.Info("Allocated IP address matches the desired IP address. \n", "Job", jobID, "IP", allocatedIP)
-
+			cancel()
+			return
 		}
 		if allocatedIP != desiredIP {
 			IPBackLog.Info(fmt.Sprintf("Job %d: Allocated IP address (%s) does not match the desired IP address (%s). \n", jobID, allocatedIP, desiredIP))
