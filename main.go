@@ -47,12 +47,12 @@ var (
 )
 
 func main() {
-	IPBackLogFile, err := openLogFile("detective-ip.log")
+	IPBackLogFile, err := openLogFile("/var/log/detective-ip.log")
 	if err != nil {
 		log.Fatal(fmt.Sprintf("Failed to open log file %v.", err))
 	}
 	defer IPBackLogFile.Close()
-	InfoLogFile, err := openLogFile("Info.log")
+	InfoLogFile, err := openLogFile("/var/log/detective-Info.log")
 	if err != nil {
 		log.Fatal(fmt.Sprintf("Failed to open log file %v.", err))
 	}
@@ -62,9 +62,8 @@ func main() {
 		ReportTimestamp: true,
 		TimeFormat:      time.Kitchen,
 	})
-	// IPBackLog = log.New(IPBackLogFile, "[info]", log.LstdFlags|log.Lshortfile|log.Lmicroseconds)
 	IPBackLog.SetOutput(IPBackLogFile)
-	// infoLog := log.New(InfoLogFile, "[info]", log.LstdFlags|log.Lshortfile|log.Lmicroseconds)
+	log.SetOutput(InfoLogFile)
 
 	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
 	if len(subscriptionId) == 0 {
