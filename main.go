@@ -160,12 +160,10 @@ func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *syn
 		}
 		log.Info("Created public IP address", "PublicIPid", *publicIP.ID)
 		vmNic, err := interfacesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", nicName, jobID), nil)
-		requestCount.Add(1)
 		if err != nil {
 			log.Fatal(err)
 		}
 		vmSubnet, err := subnetsClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", vnetName, jobID), fmt.Sprintf("%s-%d", subnetName, jobID), nil)
-		requestCount.Add(1)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -193,6 +191,7 @@ func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *syn
 		}
 
 		pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
+		requestCount.Add(1)
 		var requestErr *azure.RequestError
 		if errors.As(err, &requestErr) {
 			// Check if the status code is 429 (Too Many Requests)
@@ -207,9 +206,9 @@ func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *syn
 			log.Fatal(err)
 		}
 
-		if err != nil {
-			log.Fatal(err)
-		}
+		// if err != nil {
+		// 	log.Fatal(err)
+		// }
 
 		resp, err := pollerResponse.PollUntilDone(ctx, nil)
 		if err != nil {
@@ -244,12 +243,10 @@ func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *syn
 
 func dissociateAndDeletePublicIP(ctx context.Context, jobID int) {
 	vmNic, err := interfacesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", nicName, jobID), nil)
-	requestCount.Add(1)
 	if err != nil {
 		log.Fatal(err)
 	}
 	vmSubnet, err := subnetsClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", vnetName, jobID), fmt.Sprintf("%s-%d", subnetName, jobID), nil)
-	requestCount.Add(1)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -274,12 +271,29 @@ func dissociateAndDeletePublicIP(ctx context.Context, jobID int) {
 	}
 
 	pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
+	requestCount.Add(1)
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+	var requestErr *azure.RequestError
+	if errors.As(err, &requestErr) {
+		// Check if the status code is 429 (Too Many Requests)
+		if requestErr.StatusCode == http.StatusTooManyRequests {
+			// Handle the 429 error
+			fmt.Println("Too Many Requests. Retrying after 303 seconds...")
+			// Additional actions you want to take for 429 error
+			time.Sleep(304 * time.Second)
+		}
+	} else {
+		// Handle other types of errors
+		log.Fatal(err)
+	}
+
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	resp, err := pollerResponse.PollUntilDone(ctx, nil)
-	requestCount.Add(1)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -302,32 +316,23 @@ func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 	ctx := context.Background()
 
 	resourcesClientFactory, err = armresources.NewClientFactory(subscriptionId, conn, nil)
-	requestCount.Add(1)
 	if err != nil {
 		log.Fatal(err)
 	}
 	networkClientFactory, err = armnetwork.NewClientFactory(subscriptionId, conn, nil)
-	requestCount.Add(1)
 	if err != nil {
 		log.Fatal(err)
 	}
 	virtualNetworksClient = networkClientFactory.NewVirtualNetworksClient()
-	requestCount.Add(1)
 	subnetsClient = networkClientFactory.NewSubnetsClient()
-	requestCount.Add(1)
 	publicIPAddressesClient = networkClientFactory.NewPublicIPAddressesClient()
-	requestCount.Add(1)
 	interfacesClient = networkClientFactory.NewInterfacesClient()
-	requestCount.Add(1)
 	computeClientFactory, err = armcompute.NewClientFactory(subscriptionId, conn, nil)
-	requestCount.Add(1)
 	if err != nil {
 		log.Fatal(err)
 	}
 	virtualMachinesClient = computeClientFactory.NewVirtualMachinesClient()
-	requestCount.Add(1)
 	disksClient = computeClientFactory.NewDisksClient()
-	requestCount.Add(1)
 	log.Info(fmt.Sprintf("Job: %d start creating virtual machine (%s)...", jobID, fmt.Sprintf("%s-%d", vmName, jobID)))
 	virtualNetwork, err := createVirtualNetwork(ctx, jobID)
 	if err != nil {
@@ -403,7 +408,6 @@ func cleanup(jobID int) {
 
 func getPublicIP(x int) string {
 	resp, err := publicIPAddressesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", publicIPName, x), nil)
-	requestCount.Add(1)
 	if err != nil {
 		log.Fatalf("failed to get public IP address: %v", err)
 	}
@@ -432,12 +436,12 @@ func createVirtualNetwork(ctx context.Context, x int) (*armnetwork.VirtualNetwor
 	}
 
 	pollerResponse, err := virtualNetworksClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", vnetName, x), parameters, nil)
+	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
 
 	resp, err := pollerResponse.PollUntilDone(ctx, nil)
-	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
@@ -469,12 +473,12 @@ func createSubnets(ctx context.Context, x int) (*armnetwork.Subnet, error) {
 	}
 
 	pollerResponse, err := subnetsClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", vnetName, x), fmt.Sprintf("%s-%d", subnetName, x), parameters, nil)
+	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
 
 	resp, err := pollerResponse.PollUntilDone(ctx, nil)
-	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
@@ -507,12 +511,12 @@ func createPublicIP(ctx context.Context, x int) (*armnetwork.PublicIPAddress, er
 	}
 
 	pollerResponse, err := publicIPAddressesClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", publicIPName, x), parameters, nil)
+	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
 
 	resp, err := pollerResponse.PollUntilDone(ctx, nil)
-	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
@@ -522,12 +526,12 @@ func createPublicIP(ctx context.Context, x int) (*armnetwork.PublicIPAddress, er
 func deletePublicIP(ctx context.Context, x int) error {
 
 	pollerResponse, err := publicIPAddressesClient.BeginDelete(ctx, resourceGroupName, fmt.Sprintf("%s-%d", publicIPName, x), nil)
+	requestCount.Add(1)
 	if err != nil {
 		return err
 	}
 
 	_, err = pollerResponse.PollUntilDone(ctx, nil)
-	requestCount.Add(1)
 	if err != nil {
 		return err
 	}
@@ -554,12 +558,12 @@ func createNetWorkInterface(ctx context.Context, subnetID string, x int) (*armne
 	}
 
 	pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", nicName, x), parameters, nil)
+	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
 
 	resp, err := pollerResponse.PollUntilDone(ctx, nil)
-	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
@@ -630,12 +634,12 @@ func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int)
 	}
 
 	pollerResponse, err := virtualMachinesClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", vmName, x), parameters, nil)
+	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
 
 	resp, err := pollerResponse.PollUntilDone(ctx, nil)
-	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
