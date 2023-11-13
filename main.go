@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
-	"io"
+	"net/http"
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -16,6 +18,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v4"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v2"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
+	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/charmbracelet/log"
 )
 
@@ -51,6 +54,8 @@ var (
 	disksClient           *armcompute.DisksClient
 )
 
+var requestCount atomic.Int64
+
 func main() {
 	gctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
@@ -68,18 +73,8 @@ func main() {
 		log.Fatal(fmt.Sprintf("Failed to open log file [%v.]", err))
 	}
 	defer IPBackLogFile.Close()
-	InfoLogFile, err := openLogFile(fmt.Sprintf("%s/detective-info.log", *logdirPath))
-	if err != nil {
-		log.Fatal(fmt.Sprintf("Failed to open log file [%v.]", err))
-	}
-	defer InfoLogFile.Close()
-	IPBackLog = log.NewWithOptions(os.Stderr, log.Options{
-		ReportCaller:    false,
-		ReportTimestamp: true,
-		TimeFormat:      time.Kitchen,
-	})
+
 	IPBackLog.SetOutput(IPBackLogFile)
-	log.SetOutput(io.MultiWriter(os.Stdout, InfoLogFile))
 	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
 	if len(subscriptionId) == 0 {
 		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
@@ -157,18 +152,20 @@ func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *syn
 	defer wg.Done()
 
 	for task := range tasks {
+		log.Warn("requestCount:", "count", requestCount.Load())
 		_ = task
 		publicIP, err := createPublicIP(lctx, jobID)
 		if err != nil {
 			log.Fatalf("cannot create public IP address:%+v", err)
 		}
 		log.Info("Created public IP address", "PublicIPid", *publicIP.ID)
-
 		vmNic, err := interfacesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", nicName, jobID), nil)
+		requestCount.Add(1)
 		if err != nil {
 			log.Fatal(err)
 		}
 		vmSubnet, err := subnetsClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", vnetName, jobID), fmt.Sprintf("%s-%d", subnetName, jobID), nil)
+		requestCount.Add(1)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -196,6 +193,20 @@ func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *syn
 		}
 
 		pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
+		var requestErr *azure.RequestError
+		if errors.As(err, &requestErr) {
+			// Check if the status code is 429 (Too Many Requests)
+			if requestErr.StatusCode == http.StatusTooManyRequests {
+				// Handle the 429 error
+				fmt.Println("Too Many Requests. Retrying after 303 seconds...")
+				// Additional actions you want to take for 429 error
+				time.Sleep(304 * time.Second)
+			}
+		} else {
+			// Handle other types of errors
+			log.Fatal(err)
+		}
+
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -233,10 +244,12 @@ func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *syn
 
 func dissociateAndDeletePublicIP(ctx context.Context, jobID int) {
 	vmNic, err := interfacesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", nicName, jobID), nil)
+	requestCount.Add(1)
 	if err != nil {
 		log.Fatal(err)
 	}
 	vmSubnet, err := subnetsClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", vnetName, jobID), fmt.Sprintf("%s-%d", subnetName, jobID), nil)
+	requestCount.Add(1)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -266,6 +279,7 @@ func dissociateAndDeletePublicIP(ctx context.Context, jobID int) {
 	}
 
 	resp, err := pollerResponse.PollUntilDone(ctx, nil)
+	requestCount.Add(1)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -288,25 +302,32 @@ func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 	ctx := context.Background()
 
 	resourcesClientFactory, err = armresources.NewClientFactory(subscriptionId, conn, nil)
+	requestCount.Add(1)
 	if err != nil {
 		log.Fatal(err)
 	}
 	networkClientFactory, err = armnetwork.NewClientFactory(subscriptionId, conn, nil)
+	requestCount.Add(1)
 	if err != nil {
 		log.Fatal(err)
 	}
 	virtualNetworksClient = networkClientFactory.NewVirtualNetworksClient()
+	requestCount.Add(1)
 	subnetsClient = networkClientFactory.NewSubnetsClient()
+	requestCount.Add(1)
 	publicIPAddressesClient = networkClientFactory.NewPublicIPAddressesClient()
+	requestCount.Add(1)
 	interfacesClient = networkClientFactory.NewInterfacesClient()
-
+	requestCount.Add(1)
 	computeClientFactory, err = armcompute.NewClientFactory(subscriptionId, conn, nil)
+	requestCount.Add(1)
 	if err != nil {
 		log.Fatal(err)
 	}
 	virtualMachinesClient = computeClientFactory.NewVirtualMachinesClient()
+	requestCount.Add(1)
 	disksClient = computeClientFactory.NewDisksClient()
-
+	requestCount.Add(1)
 	log.Info(fmt.Sprintf("Job: %d start creating virtual machine (%s)...", jobID, fmt.Sprintf("%s-%d", vmName, jobID)))
 	virtualNetwork, err := createVirtualNetwork(ctx, jobID)
 	if err != nil {
@@ -382,6 +403,7 @@ func cleanup(jobID int) {
 
 func getPublicIP(x int) string {
 	resp, err := publicIPAddressesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", publicIPName, x), nil)
+	requestCount.Add(1)
 	if err != nil {
 		log.Fatalf("failed to get public IP address: %v", err)
 	}
@@ -415,6 +437,7 @@ func createVirtualNetwork(ctx context.Context, x int) (*armnetwork.VirtualNetwor
 	}
 
 	resp, err := pollerResponse.PollUntilDone(ctx, nil)
+	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
@@ -451,6 +474,7 @@ func createSubnets(ctx context.Context, x int) (*armnetwork.Subnet, error) {
 	}
 
 	resp, err := pollerResponse.PollUntilDone(ctx, nil)
+	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
@@ -488,6 +512,7 @@ func createPublicIP(ctx context.Context, x int) (*armnetwork.PublicIPAddress, er
 	}
 
 	resp, err := pollerResponse.PollUntilDone(ctx, nil)
+	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
@@ -502,6 +527,7 @@ func deletePublicIP(ctx context.Context, x int) error {
 	}
 
 	_, err = pollerResponse.PollUntilDone(ctx, nil)
+	requestCount.Add(1)
 	if err != nil {
 		return err
 	}
@@ -533,6 +559,7 @@ func createNetWorkInterface(ctx context.Context, subnetID string, x int) (*armne
 	}
 
 	resp, err := pollerResponse.PollUntilDone(ctx, nil)
+	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
@@ -608,6 +635,7 @@ func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int)
 	}
 
 	resp, err := pollerResponse.PollUntilDone(ctx, nil)
+	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
