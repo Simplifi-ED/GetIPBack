@@ -2,23 +2,22 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v4"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v2"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
-	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/charmbracelet/log"
 )
 
@@ -73,7 +72,11 @@ func main() {
 		log.Fatal(fmt.Sprintf("Failed to open log file [%v.]", err))
 	}
 	defer IPBackLogFile.Close()
-
+	IPBackLog = log.NewWithOptions(os.Stderr, log.Options{
+		ReportCaller:    false,
+		ReportTimestamp: true,
+		TimeFormat:      time.Kitchen,
+	})
 	IPBackLog.SetOutput(IPBackLogFile)
 	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
 	if len(subscriptionId) == 0 {
@@ -131,6 +134,23 @@ func main() {
 	// Wait for all worker goroutines to finish.
 	wgPIP.Wait()
 
+}
+
+// Check if the error message indicates throttling
+func isThrottlingError(err error) bool {
+	if err != nil {
+		errorMessage := err.Error()
+		return contains(errorMessage, "SubscriptionRequestsThrottled")
+	}
+	return false
+}
+
+func contains(s, substr string) bool {
+	if strings.Contains(s, substr) {
+		return true
+	} else {
+		return false
+	}
 }
 
 func openLogFile(path string) (*os.File, error) {
@@ -192,25 +212,18 @@ func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *syn
 
 		pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
 		requestCount.Add(1)
-		var requestErr *azure.RequestError
-		if errors.As(err, &requestErr) {
-			// Check if the status code is 429 (Too Many Requests)
-			if requestErr.StatusCode == http.StatusTooManyRequests {
-				// Handle the 429 error
-				fmt.Println("Too Many Requests. Retrying after 303 seconds...")
-				// Additional actions you want to take for 429 error
+		if err != nil {
+			if isThrottlingError(err) {
+				log.Warn(fmt.Sprintf("Job: %s - Too Many Requests. Retrying after 303 seconds...", jobID))
 				time.Sleep(304 * time.Second)
+			} else {
+				log.Fatal(err)
 			}
-		} else {
-			// Handle other types of errors
-			log.Fatal(err)
 		}
-
-		// if err != nil {
-		// 	log.Fatal(err)
-		// }
-
-		resp, err := pollerResponse.PollUntilDone(ctx, nil)
+		options := &runtime.PollUntilDoneOptions{
+			Frequency: 6 * time.Minute,
+		}
+		resp, err := pollerResponse.PollUntilDone(ctx, options)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -272,28 +285,18 @@ func dissociateAndDeletePublicIP(ctx context.Context, jobID int) {
 
 	pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
 	requestCount.Add(1)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	var requestErr *azure.RequestError
-	if errors.As(err, &requestErr) {
-		// Check if the status code is 429 (Too Many Requests)
-		if requestErr.StatusCode == http.StatusTooManyRequests {
-			// Handle the 429 error
-			fmt.Println("Too Many Requests. Retrying after 303 seconds...")
-			// Additional actions you want to take for 429 error
-			time.Sleep(304 * time.Second)
-		}
-	} else {
-		// Handle other types of errors
-		log.Fatal(err)
-	}
-
 	if err != nil {
-		log.Fatal(err)
+		if isThrottlingError(err) {
+			log.Warn(fmt.Sprintf("Job: %s - Too Many Requests. Retrying after 303 seconds...", jobID))
+			time.Sleep(304 * time.Second)
+		} else {
+			log.Fatal(err)
+		}
 	}
-
-	resp, err := pollerResponse.PollUntilDone(ctx, nil)
+	options := &runtime.PollUntilDoneOptions{
+		Frequency: 6 * time.Minute,
+	}
+	resp, err := pollerResponse.PollUntilDone(ctx, options)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -513,10 +516,17 @@ func createPublicIP(ctx context.Context, x int) (*armnetwork.PublicIPAddress, er
 	pollerResponse, err := publicIPAddressesClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", publicIPName, x), parameters, nil)
 	requestCount.Add(1)
 	if err != nil {
-		return nil, err
+		if isThrottlingError(err) {
+			log.Warn(fmt.Sprintf("Job: %s - Too Many Requests. Retrying after 303 seconds...", x))
+			time.Sleep(304 * time.Second)
+		} else {
+			log.Fatal(err)
+		}
 	}
-
-	resp, err := pollerResponse.PollUntilDone(ctx, nil)
+	options := &runtime.PollUntilDoneOptions{
+		Frequency: 6 * time.Minute,
+	}
+	resp, err := pollerResponse.PollUntilDone(ctx, options)
 	if err != nil {
 		return nil, err
 	}
