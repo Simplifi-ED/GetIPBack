@@ -1,14 +1,10 @@
-package main
+package app
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -21,149 +17,9 @@ import (
 	"github.com/charmbracelet/log"
 )
 
-var subscriptionId string
-var numIterations int
-var IPBackLog *log.Logger
-var spot *bool
-var cancel context.CancelFunc
-var gctx context.Context
-var resourceGroupName string = os.Getenv("DETECTIVE_RG")
-var vmName string = os.Getenv("DETECTIVE_VM_NAME")
-var vnetName string = os.Getenv("DETECTIVE_VNET_NAME")
-var subnetName string = os.Getenv("DETECTIVE_SNET_NAME")
-var nicName string = os.Getenv("DETECTIVE_NIC_NAME")
-var diskName string = os.Getenv("DETECTIVE_DISK_NAME")
-var publicIPName string = os.Getenv("DETECTIVE_PIP_NAME")
-var location string = os.Getenv("DETECTIVE_LOCATION")
-var desiredIP string = os.Getenv("DETECTIVE_MAGIC_IP")
-
-var (
-	resourcesClientFactory *armresources.ClientFactory
-	computeClientFactory   *armcompute.ClientFactory
-	networkClientFactory   *armnetwork.ClientFactory
-)
-
-var (
-	virtualNetworksClient   *armnetwork.VirtualNetworksClient
-	subnetsClient           *armnetwork.SubnetsClient
-	publicIPAddressesClient *armnetwork.PublicIPAddressesClient
-	interfacesClient        *armnetwork.InterfacesClient
-
-	virtualMachinesClient *armcompute.VirtualMachinesClient
-	disksClient           *armcompute.DisksClient
-)
-
-var requestCount atomic.Int64
-
-func main() {
-	gctx, cancel = context.WithCancel(context.Background())
-	defer cancel()
-	spot = flag.Bool("spot", true, "Specify if spot is true or false")
-	logdirPath := flag.String("logpath", "/usr/local/var/log/IPBack", "Specify logs directory path")
-	flag.Parse()
-	if _, err := os.Stat(*logdirPath); os.IsNotExist(err) {
-		err := os.MkdirAll(*logdirPath, 0755)
-		if err != nil {
-			log.Fatal("Error creating directory:", "Error", err)
-		}
-	}
-	IPBackLogFile, err := openLogFile(fmt.Sprintf("%s/detective-ip.log", *logdirPath))
-	if err != nil {
-		log.Fatal(fmt.Sprintf("Failed to open log file [%v.]", err))
-	}
-	defer IPBackLogFile.Close()
-	IPBackLog = log.NewWithOptions(os.Stderr, log.Options{
-		ReportCaller:    false,
-		ReportTimestamp: true,
-		TimeFormat:      time.Kitchen,
-	})
-	IPBackLog.SetOutput(IPBackLogFile)
-	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
-	if len(subscriptionId) == 0 {
-		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
-	}
-
-	log.Info("Creating VMs...")
-
-	numJobs, err := strconv.Atoi(os.Getenv("DETECTIVE_CONCURRENT_JOBS"))
-	if err != nil {
-		fmt.Println("Error getting DETECTIVE_CONCURRENT_JOBS")
-		return
-	}
-
-	var wg sync.WaitGroup
-	resultChan := make(chan string, numJobs)
-
-	for i := 0; i < numJobs; i++ {
-		wg.Add(1)
-		go createVM(&wg, i, resultChan)
-	}
-
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	for result := range resultChan {
-		log.Info(result)
-	}
-
-	log.Info("Assiging Public IPs...")
-
-	log.Info("Running Jobs...")
-	var wgPIP sync.WaitGroup
-	tasks := make(chan int)
-
-	for i := 0; i < numJobs; i++ {
-		wgPIP.Add(1)
-		go associatePublicIP(gctx, i, tasks, &wgPIP)
-	}
-
-	numIterations, err := strconv.Atoi(os.Getenv("DETECTIVE_NUM_ITERATION"))
-	if err != nil {
-		log.Fatal("Error getting DETECTIVE_NUM_ITERATION")
-		return
-	}
-	for i := 1; i <= numIterations; i++ {
-		tasks <- i
-	}
-
-	// Close the task channel to signal that no more tasks will be added.
-	close(tasks)
-
-	// Wait for all worker goroutines to finish.
-	wgPIP.Wait()
-
-}
-
-// Check if the error message indicates throttling
-func isThrottlingError(err error) bool {
-	if err != nil {
-		errorMessage := err.Error()
-		return contains(errorMessage, "SubscriptionRequestsThrottled")
-	}
-	return false
-}
-
-func contains(s, substr string) bool {
-	if strings.Contains(s, substr) {
-		return true
-	} else {
-		return false
-	}
-}
-
-func openLogFile(path string) (*os.File, error) {
-	logFile, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
-	if err != nil {
-		return nil, err
-	}
-	return logFile, nil
-}
-
-func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *sync.WaitGroup) {
-	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
-	if len(subscriptionId) == 0 {
+func AssociatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *sync.WaitGroup) {
+	SubscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
+	if len(SubscriptionId) == 0 {
 		log.Fatal("AZURE_SUBSCRIPTION_ID is not set.")
 	}
 
@@ -172,7 +28,6 @@ func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *syn
 	defer wg.Done()
 
 	for task := range tasks {
-		log.Warn("requestCount:", "count", requestCount.Load())
 		_ = task
 		publicIP, err := createPublicIP(lctx, jobID)
 		if err != nil {
@@ -211,11 +66,11 @@ func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *syn
 		}
 
 		pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
-		requestCount.Add(1)
 		if err != nil {
-			if isThrottlingError(err) {
-				log.Warn(fmt.Sprintf("Job: %s - Too Many Requests. Retrying after 303 seconds...", jobID))
+			if IsThrottlingError(err) {
+				log.Warn(fmt.Sprintf("Job: %d - Too Many Requests. Retrying after 303 seconds...", jobID))
 				time.Sleep(304 * time.Second)
+				continue
 			} else {
 				log.Fatal(err)
 			}
@@ -241,7 +96,7 @@ func associatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *syn
 		if allocatedIP == desiredIP {
 			IPBackLog.Info(fmt.Sprintf("Job %d: Allocated IP address matches the desired IP address: %s  \x1b[32m[Success]\n", jobID, allocatedIP))
 			log.Info("Allocated IP address matches the desired IP address. \n", "Job", jobID, "IP", allocatedIP)
-			cancel()
+			Cancel()
 			return
 		}
 		if allocatedIP != desiredIP {
@@ -284,11 +139,11 @@ func dissociateAndDeletePublicIP(ctx context.Context, jobID int) {
 	}
 
 	pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
-	requestCount.Add(1)
 	if err != nil {
-		if isThrottlingError(err) {
-			log.Warn(fmt.Sprintf("Job: %s - Too Many Requests. Retrying after 303 seconds...", jobID))
+		if IsThrottlingError(err) {
+			log.Warn(fmt.Sprintf("Job: %d - Too Many Requests. Retrying after 303 seconds...", jobID))
 			time.Sleep(304 * time.Second)
+			dissociateAndDeletePublicIP(ctx, jobID)
 		} else {
 			log.Fatal(err)
 		}
@@ -306,11 +161,11 @@ func dissociateAndDeletePublicIP(ctx context.Context, jobID int) {
 	if err != nil {
 		log.Fatalf("cannot delete public IP address:%+v", err)
 	}
-	log.Info("deleted public IP address")
+	log.Info("Public IP address deleted", "PublicIpName", fmt.Sprintf("%s-%d", publicIPName, jobID))
 
 }
 
-func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
+func CreateVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 	defer wg.Done()
 	conn, err := connectionAzure()
 	if err != nil {
@@ -318,11 +173,11 @@ func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 	}
 	ctx := context.Background()
 
-	resourcesClientFactory, err = armresources.NewClientFactory(subscriptionId, conn, nil)
+	resourcesClientFactory, err = armresources.NewClientFactory(SubscriptionId, conn, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	networkClientFactory, err = armnetwork.NewClientFactory(subscriptionId, conn, nil)
+	networkClientFactory, err = armnetwork.NewClientFactory(SubscriptionId, conn, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -330,7 +185,7 @@ func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 	subnetsClient = networkClientFactory.NewSubnetsClient()
 	publicIPAddressesClient = networkClientFactory.NewPublicIPAddressesClient()
 	interfacesClient = networkClientFactory.NewInterfacesClient()
-	computeClientFactory, err = armcompute.NewClientFactory(subscriptionId, conn, nil)
+	computeClientFactory, err = armcompute.NewClientFactory(SubscriptionId, conn, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -366,49 +221,6 @@ func createVM(wg *sync.WaitGroup, jobID int, resultChan chan string) {
 
 }
 
-func cleanup(jobID int) {
-	ctx := context.Background()
-
-	log.Warn("start deleting virtual machine...")
-	err := deleteVirtualMachine(ctx, jobID)
-	if err != nil {
-		log.Fatalf("cannot delete virtual machine:%+v", err)
-	}
-	log.Warn("deleted virtual machine")
-
-	err = deleteDisk(ctx, jobID)
-	if err != nil {
-		log.Fatalf("cannot delete disk:%+v", err)
-	}
-	log.Warn("deleted disk")
-
-	err = deleteNetWorkInterface(ctx, jobID)
-	if err != nil {
-		log.Fatalf("cannot delete network interface:%+v", err)
-	}
-	log.Warn("deleted network interface")
-
-	err = deletePublicIP(ctx, jobID)
-	if err != nil {
-		log.Fatalf("cannot delete public IP address:%+v", err)
-	}
-	log.Warn("deleted public IP address")
-
-	err = deleteSubnets(ctx, jobID)
-	if err != nil {
-		log.Fatalf("cannot delete subnet:%+v", err)
-	}
-	log.Warn("deleted subnet")
-
-	err = deleteVirtualNetWork(ctx, jobID)
-	if err != nil {
-		log.Fatalf("cannot delete virtual network:%+v", err)
-	}
-	log.Warn("deleted virtual network")
-
-	log.Info("success deleted virtual machine.")
-}
-
 func getPublicIP(x int) string {
 	resp, err := publicIPAddressesClient.Get(context.Background(), resourceGroupName, fmt.Sprintf("%s-%d", publicIPName, x), nil)
 	if err != nil {
@@ -439,7 +251,6 @@ func createVirtualNetwork(ctx context.Context, x int) (*armnetwork.VirtualNetwor
 	}
 
 	pollerResponse, err := virtualNetworksClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", vnetName, x), parameters, nil)
-	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
@@ -476,7 +287,6 @@ func createSubnets(ctx context.Context, x int) (*armnetwork.Subnet, error) {
 	}
 
 	pollerResponse, err := subnetsClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", vnetName, x), fmt.Sprintf("%s-%d", subnetName, x), parameters, nil)
-	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
@@ -514,11 +324,11 @@ func createPublicIP(ctx context.Context, x int) (*armnetwork.PublicIPAddress, er
 	}
 
 	pollerResponse, err := publicIPAddressesClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", publicIPName, x), parameters, nil)
-	requestCount.Add(1)
 	if err != nil {
-		if isThrottlingError(err) {
-			log.Warn(fmt.Sprintf("Job: %s - Too Many Requests. Retrying after 303 seconds...", x))
+		if IsThrottlingError(err) {
+			log.Warn(fmt.Sprintf("Job: %d - Too Many Requests. Retrying after 303 seconds...", x))
 			time.Sleep(304 * time.Second)
+			createPublicIP(ctx, x)
 		} else {
 			log.Fatal(err)
 		}
@@ -536,7 +346,6 @@ func createPublicIP(ctx context.Context, x int) (*armnetwork.PublicIPAddress, er
 func deletePublicIP(ctx context.Context, x int) error {
 
 	pollerResponse, err := publicIPAddressesClient.BeginDelete(ctx, resourceGroupName, fmt.Sprintf("%s-%d", publicIPName, x), nil)
-	requestCount.Add(1)
 	if err != nil {
 		return err
 	}
@@ -568,7 +377,6 @@ func createNetWorkInterface(ctx context.Context, subnetID string, x int) (*armne
 	}
 
 	pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", nicName, x), parameters, nil)
-	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
@@ -598,7 +406,7 @@ func deleteNetWorkInterface(ctx context.Context, x int) error {
 
 func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int) (*armcompute.VirtualMachine, error) {
 	Priority := to.Ptr(armcompute.VirtualMachinePriorityTypesSpot)
-	if !*spot {
+	if !*Spot {
 		Priority = to.Ptr(armcompute.VirtualMachinePriorityTypesRegular)
 	}
 	parameters := armcompute.VirtualMachine{
@@ -613,6 +421,10 @@ func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int)
 					Publisher: to.Ptr("Canonical"),
 					SKU:       to.Ptr("22_04-lts-arm64"),
 					Version:   to.Ptr("22.04.202310260"),
+					// Offer:     to.Ptr("UbuntuServer"),
+					// Publisher: to.Ptr("Canonical"),
+					// SKU:       to.Ptr("18.04-LTS"),
+					// Version:   to.Ptr("latest"),
 				},
 				OSDisk: &armcompute.OSDisk{
 					Name:         to.Ptr(fmt.Sprintf("%s-%d", diskName, x)),
@@ -626,7 +438,7 @@ func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int)
 			},
 			Priority: Priority,
 			HardwareProfile: &armcompute.HardwareProfile{
-				VMSize: to.Ptr(armcompute.VirtualMachineSizeTypes("Standard_B2pts_v2")), // Standard_B2pts_v2
+				VMSize: to.Ptr(armcompute.VirtualMachineSizeTypes("Standard_B2pts_v2")), // Standard_B1ls
 			},
 			OSProfile: &armcompute.OSProfile{
 				ComputerName:  to.Ptr(fmt.Sprintf("%s-%d", vmName, x)),
@@ -644,7 +456,6 @@ func createVirtualMachine(ctx context.Context, networkInterfaceID string, x int)
 	}
 
 	pollerResponse, err := virtualMachinesClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", vmName, x), parameters, nil)
-	requestCount.Add(1)
 	if err != nil {
 		return nil, err
 	}
