@@ -1,6 +1,6 @@
 builds:
   - binary: getipback
-    main: ./
+    main: ./cmd/
     goos:
       - linux
     goarch:
