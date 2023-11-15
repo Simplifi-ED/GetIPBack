@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v4"
@@ -64,26 +63,27 @@ func AssociatePublicIP(ctx context.Context, jobID int, tasks <-chan int, wg *syn
 		if err != nil {
 			log.Fatal(err)
 		}
+		success := false
+		for !success {
+			pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
+			if err != nil {
+				if IsThrottlingError(err) {
+					log.Warn(fmt.Sprintf("Job: %d - Too Many Requests. Retrying after 303 seconds...", jobID))
+					time.Sleep(304 * time.Second)
+					continue // Retry the operation
+				} else {
+					log.Fatal(err)
+				}
+			}
 
-		pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
-		if err != nil {
-			if IsThrottlingError(err) {
-				log.Warn(fmt.Sprintf("Job: %d - Too Many Requests. Retrying after 303 seconds...", jobID))
-				time.Sleep(304 * time.Second)
-				continue
-			} else {
+			resp, err := pollerResponse.PollUntilDone(ctx, nil)
+			if err != nil {
 				log.Fatal(err)
 			}
+			success = true
+			log.Info("Public IP Associated", "NicName", *resp.Name)
+			break
 		}
-		options := &runtime.PollUntilDoneOptions{
-			Frequency: 6 * time.Minute,
-		}
-		resp, err := pollerResponse.PollUntilDone(ctx, options)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		log.Info("Public IP Associated", "NicName", *resp.Name)
 
 		time.Sleep(10 * time.Second)
 		select {
@@ -138,24 +138,27 @@ func dissociateAndDeletePublicIP(ctx context.Context, jobID int) {
 		log.Fatal(err)
 	}
 
-	pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
-	if err != nil {
-		if IsThrottlingError(err) {
-			log.Warn(fmt.Sprintf("Job: %d - Too Many Requests. Retrying after 303 seconds...", jobID))
-			time.Sleep(304 * time.Second)
-			dissociateAndDeletePublicIP(ctx, jobID)
-		} else {
+	success := false
+	for !success {
+		pollerResponse, err := interfacesClient.BeginCreateOrUpdate(ctx, resourceGroupName, *vmNic.Name, parameters, nil)
+		if err != nil {
+			if IsThrottlingError(err) {
+				log.Warn(fmt.Sprintf("Job: %d - Too Many Requests. Retrying after 303 seconds...", jobID))
+				time.Sleep(304 * time.Second)
+				continue // Retry the operation
+			} else {
+				log.Fatal(err)
+			}
+		}
+
+		resp, err := pollerResponse.PollUntilDone(ctx, nil)
+		if err != nil {
 			log.Fatal(err)
 		}
+		success = true
+		log.Info("Public IP Disassociated", "NicName", *resp.Name)
+		break
 	}
-	options := &runtime.PollUntilDoneOptions{
-		Frequency: 6 * time.Minute,
-	}
-	resp, err := pollerResponse.PollUntilDone(ctx, options)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Info("Public IP Disassociated", "NicName", *resp.Name)
 
 	err = deletePublicIP(ctx, jobID)
 	if err != nil {
@@ -323,24 +326,25 @@ func createPublicIP(ctx context.Context, x int) (*armnetwork.PublicIPAddress, er
 		},
 	}
 
-	pollerResponse, err := publicIPAddressesClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", publicIPName, x), parameters, nil)
-	if err != nil {
-		if IsThrottlingError(err) {
-			log.Warn(fmt.Sprintf("Job: %d - Too Many Requests. Retrying after 303 seconds...", x))
-			time.Sleep(304 * time.Second)
-			createPublicIP(ctx, x)
-		} else {
-			log.Fatal(err)
+	for {
+		pollerResponse, err := publicIPAddressesClient.BeginCreateOrUpdate(ctx, resourceGroupName, fmt.Sprintf("%s-%d", publicIPName, x), parameters, nil)
+		if err != nil {
+			if IsThrottlingError(err) {
+				log.Warn(fmt.Sprintf("Job: %d - Too Many Requests. Retrying after 303 seconds...", x))
+				time.Sleep(304 * time.Second)
+				continue // Retry the operation
+			} else {
+				return nil, err
+			}
 		}
+
+		resp, err := pollerResponse.PollUntilDone(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		return &resp.PublicIPAddress, nil
 	}
-	options := &runtime.PollUntilDoneOptions{
-		Frequency: 6 * time.Minute,
-	}
-	resp, err := pollerResponse.PollUntilDone(ctx, options)
-	if err != nil {
-		return nil, err
-	}
-	return &resp.PublicIPAddress, err
 }
 
 func deletePublicIP(ctx context.Context, x int) error {
