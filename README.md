@@ -10,10 +10,10 @@ The program runs N VMs of size Standard_B2pts_v2 which represents the workers an
 get the go binaries from releases:
 
 ```shell
-curl -Lso https://github.com/Simplifi-ED/GetIPBack/releases/download/v0.0.3-rc/GetIPBack_0.0.3-rc_linux_amd64.tar.gz
-tar -xcf GetIPBack_0.0.3-rc_linux_amd64.tar.gz
-(sudo) mv GetIPBack_0.0.3-rc_linux_amd64 /usr/local/bin/GetIPBack
-(sudo) chmod +x /usr/local/bin/GetIPBack
+curl -Lso https://github.com/Simplifi-ED/GetIPBack/releases/download/v0.0.5/GetIPBack_0.0.5_linux_amd64.tar.gz
+tar -xcf GetIPBack_0.0.5_linux_amd64.tar.gz
+(sudo) mv GetIPBack_0.0.5_linux_amd64 /usr/local/bin/getipback
+(sudo) chmod +x /usr/local/bin/getipback
 ```
 
 ## Executing
